@@ -130,6 +130,7 @@ export class Remapper implements IRemapper {
     modeHandler: ModeHandler
   ) {
     const numCharsToRemove = remapping.before.length - 1;
+    /*
     // Revert previously inserted characters
     // (e.g. jj remapped to esc, we have to revert the inserted "jj")
     if (vimState.currentMode === Mode.Insert) {
@@ -142,6 +143,7 @@ export class Remapper implements IRemapper {
         c.withNewStop(c.stop.getLeft(numCharsToRemove))
       );
     }
+    */
     // We need to remove the keys that were remapped into different keys from the state.
     vimState.recordedState.actionKeys = vimState.recordedState.actionKeys.slice(
       0,

@@ -51,6 +51,11 @@ export class VimState implements vscode.Disposable {
   public lastKeyPressedTimestamp = 0;
 
   /**
+   * For characters overwritten by remapped keys in insert mode like jj to esc.
+   */
+  public overwrittenChars: string[] = [];
+
+  /**
    * Are multiple cursors currently present?
    */
   // TODO: why isn't this a function?

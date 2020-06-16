@@ -53,6 +53,9 @@ export class ModeHandler implements vscode.Disposable {
   private _remappers: Remappers;
   private readonly _logger = Logger.get('ModeHandler');
 
+  private _timeoutObj: NodeJS.Timeout | undefined = undefined;
+  private _firstMappedKey: boolean = false;
+
   // TODO: clarify the difference between ModeHandler.currentMode and VimState.currentMode
   private _currentMode: Mode;
   public vimState: VimState;
@@ -312,11 +315,71 @@ export class ModeHandler implements vscode.Disposable {
         !this.vimState.isCurrentlyPerformingRemapping &&
         (!isOperatorCombination || this.vimState.currentMode !== Mode.Normal)
       ) {
+        const wasPotentialRemap = this._remappers.isPotentialRemap && isWithinTimeout;
+        const atBeginning = this.vimState.cursors.map((c) => c.stop.character === 0);
+
         handled = await this._remappers.sendKey(
           this.vimState.recordedState.commandList,
           this,
           this.vimState
         );
+
+        const unset = (recover: boolean) => () => {
+          if (this._timeoutObj !== undefined) {
+            clearTimeout(this._timeoutObj);
+            this._timeoutObj = undefined;
+          }
+          this._firstMappedKey = false;
+          const baseString =
+            this.vimState.recordedState.commandList.slice(0, -1).join('') ||
+            this.vimState.recordedState.commandList[0];
+          for (let i = 0; i < this.vimState.cursors.length; i++) {
+            const cursor = this.vimState.cursors[i];
+            const overwrittenChar = this.vimState.overwrittenChars[i];
+            const cursorShift = recover || atBeginning[i];
+            const cursorPos = cursorShift ? cursor.stop : cursor.stop.getRight();
+            const range = new vscode.Range(cursorPos, cursorPos.getRight());
+            const cursorAtEnd = TextEditor.getLineLength(cursorPos.line) === cursorPos.character;
+            this.vimState.editor.edit((editBuilder) => {
+              editBuilder.replace(range, overwrittenChar);
+              if (recover && baseString) {
+                editBuilder.insert(cursor.start, baseString);
+              }
+            });
+          }
+          this.vimState.overwrittenChars = [];
+          this.vimState.recordedState.resetCommandList();
+          this.vimState.recordedState.actionKeys = [];
+        };
+        // Handle remaps in insert or visual mode
+        if (this._remappers.isPotentialRemap) {
+          this._firstMappedKey = !wasPotentialRemap;
+          for (const cursor of this.vimState.cursors) {
+            const range = new vscode.Range(cursor.stop, cursor.stop.getRight());
+            const cursorAtEnd =
+              TextEditor.getLineLength(cursor.stop.line) === cursor.stop.character;
+            // If this is the first key in a series of remaps
+            if (this._firstMappedKey) {
+              if (cursorAtEnd) {
+                this.vimState.overwrittenChars.push('');
+              } else {
+                this.vimState.overwrittenChars.push(this.vimState.editor.document.getText(range));
+              }
+            }
+            this.vimState.editor.edit((editBuilder) => {
+              if (cursorAtEnd) {
+                editBuilder.insert(cursor.stop.getRight(1000), key);
+              } else {
+                editBuilder.replace(range, key);
+              }
+            });
+          }
+          this._timeoutObj = setTimeout(unset(true), configuration.timeout);
+        } else if (!handled && wasPotentialRemap) {
+          unset(true)();
+        } else if (handled) {
+          unset(false)();
+        }
       }
 
       if (handled) {
@@ -424,7 +487,11 @@ export class ModeHandler implements vscode.Disposable {
       vimState.recordedMacro.actionsRun.push(actionToRecord);
     }
 
-    vimState = await this.runAction(vimState, recordedState, action);
+    const now = Number(new Date());
+    const isWithinTimeout = now - this.vimState.lastKeyPressedTimestamp < configuration.timeout;
+    if (!this._remappers.isPotentialRemap || (!this._firstMappedKey && !isWithinTimeout)) {
+      vimState = await this.runAction(vimState, recordedState, action);
+    }
 
     if (vimState.currentMode === Mode.Insert) {
       recordedState.isInsertion = true;
